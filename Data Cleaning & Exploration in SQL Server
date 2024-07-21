@@ -1,0 +1,147 @@
+
+-- Creating a copy of the raw data
+SELECT *
+INTO layoffs_new
+FROM layoffs;
+
+
+-- Removing Duplicates
+WITH duplicates_table AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY company, location, industry, total_laid_off, 
+                              percentage_laid_off, date, funds_raised_millions, country, 
+                              stage ORDER BY company) AS row_num
+    FROM layoffs_new
+)
+DELETE lc
+FROM layoffs_new lc
+JOIN duplicates_table dt
+    ON lc.company = dt.company
+    AND lc.location = dt.location
+    AND lc.industry = dt.industry
+    AND ISNULL(lc.total_laid_off, 0) = ISNULL(dt.total_laid_off, 0)
+    AND ISNULL(lc.percentage_laid_off, 0) = ISNULL(dt.percentage_laid_off, 0)
+    AND ISNULL(lc.date, '1900-01-01') = ISNULL(dt.date, '1900-01-01')
+    AND ISNULL(lc.funds_raised_millions, 0) = ISNULL(dt.funds_raised_millions, 0)
+    AND lc.country = dt.country
+    AND lc.stage = dt.stage
+WHERE dt.row_num > 1;
+
+-- Trim the data
+UPDATE layoffs_new
+SET company = TRIM(company);
+
+-- Standardizing Data
+UPDATE layoffs_new
+SET industry ='Crypto'
+WHERE industry IN ('Crypto', 'Crypto Currency', 'CryptoCurrency')
+
+
+-- Fix text mismatch in the country column
+UPDATE layoffs_new
+SET country = 'United States'
+WHERE country = 'United States.';
+
+-- Change 'date' format 
+ALTER TABLE layoffs_new
+ALTER COLUMN date DATE;
+
+-- Fix NULL values in industry column
+
+-- Set NULL values to blanks 
+UPDATE layoffs_new
+SET industry = NULL
+WHERE industry = ''
+
+UPDATE ln1
+SET ln1.industry = ln2.industry
+FROM layoffs_new ln1
+JOIN layoffs_new AS ln2
+    ON ln1.company = ln2.company
+WHERE (ln1.industry IS NULL OR ln1.industry = '')
+AND ln2.industry IS NOT NULL;
+
+-- Manual update to industry since there is only one observation
+UPDATE layoffs_new
+SET industry = 'Other'
+WHERE company = 'Bally''s Interactive';
+
+-- Deleting rows with NULLS in total_laid_off AND percentage_laid_off 
+DELETE 
+FROM layoffs_new
+WHERE total_laid_off IS NULL
+AND percentage_laid_off IS NULL;
+
+
+-- Data Exploration 
+
+/*
+Which Industry had the most layoffs
+		excluding companies that let go 100% of the staff,
+		i.e. went out of business */
+SELECT industry, SUM(total_laid_off) AS total_layoffs 
+	FROM layoffs_new
+	WHERE percentage_laid_off <> 1
+	GROUP BY industry
+	ORDER BY total_layoffs DESC;
+
+-- Number of layoffs per year
+SELECT YEAR(date) AS 'year', SUM(total_laid_off) AS layoffs_total
+	FROM layoffs_new
+	WHERE date IS NOT NULL
+	GROUP BY YEAR(date)
+	ORDER BY YEAR(date);
+
+-- Layoffs per year for each industry
+SELECT
+    industry,
+    SUM(CASE WHEN YEAR([date]) = 2020 THEN total_laid_off ELSE 0 END) AS [2020],
+    SUM(CASE WHEN YEAR([date]) = 2021 THEN total_laid_off ELSE 0 END) AS [2021],
+    SUM(CASE WHEN YEAR([date]) = 2022 THEN total_laid_off ELSE 0 END) AS [2022],
+    SUM(CASE WHEN YEAR([date]) = 2023 THEN total_laid_off ELSE 0 END) AS [2023],
+    SUM(total_laid_off) AS [Total]
+FROM 
+    layoffs_new
+GROUP BY industry
+ORDER BY industry;
+
+-- Rolling total of layoffs by month
+WITH rolling_total AS (
+    SELECT
+        FORMAT([date], 'yyyy-MM') AS [Year-Month],
+        SUM(total_laid_off) AS [Total_Laid_Off]
+    FROM 
+        layoffs_new
+    WHERE 
+        FORMAT([date], 'yyyy-MM') IS NOT NULL
+    GROUP BY
+        FORMAT([date], 'yyyy-MM')
+)
+SELECT 
+    [Year-Month] AS 'Month', 
+    [Total_Laid_Off],
+    SUM([Total_Laid_Off]) OVER (ORDER BY [Year-Month] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS [Running_Total]
+FROM 
+    rolling_total
+ORDER BY 
+    [Year-Month];
+
+
+-- Which company layed off the most employees
+SELECT company, industry, SUM(total_laid_off) AS laid_off_total
+FROM layoffs_new
+GROUP BY company, industry
+ORDER BY 3 DESC
+
+-- Company layoffs by year
+SELECT
+    company,
+    SUM(CASE WHEN YEAR([date]) = 2020 THEN total_laid_off ELSE 0 END) AS [2020],
+    SUM(CASE WHEN YEAR([date]) = 2021 THEN total_laid_off ELSE 0 END) AS [2021],
+    SUM(CASE WHEN YEAR([date]) = 2022 THEN total_laid_off ELSE 0 END) AS [2022],
+    SUM(CASE WHEN YEAR([date]) = 2023 THEN total_laid_off ELSE 0 END) AS [2023],
+    SUM(total_laid_off) AS [Total]
+FROM 
+    layoffs_new
+GROUP BY company
+ORDER BY [Total] DESC;
